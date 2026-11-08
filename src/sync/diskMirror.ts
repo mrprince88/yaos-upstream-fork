@@ -790,33 +790,47 @@ export class DiskMirror {
 						// Known dirty: local file intentionally differs from baseline.
 						// Revive tombstone so the file re-enters sync. This is the
 						// explicit policy: local dirty work wins over remote delete.
-						try {
-							this.vaultSync.ensureFile(
-								normalized,
-								decision.diskContent,
-								this.getDeviceName(),
-								{
-									reviveTombstone: true,
-									reviveReason: "remote-delete-local-dirty-preserved",
-								},
-							);
-							this.trace?.("disk", "remote-delete-preserved-revived", {
+						// Conflict artifacts are the exception: they are local-only,
+						// so the edited copy stays on disk but the retired CRDT
+						// entry stays retired.
+						if (isMarkdownConflictArtifactPath(normalized)) {
+							this.trace?.("disk", "remote-delete-preserved-not-revived", {
 								path,
 								normalizedPath: normalized,
-								reason: "remote-delete-local-dirty-preserved",
-								contentLength: decision.diskContent.length,
+								reason: "conflict-artifact-local-only",
 							});
 							this.log(
-								`handleRemoteDelete: revived tombstone for "${path}" after dirty preservation`,
+								`handleRemoteDelete: preserved conflict artifact "${path}" locally without reviving`,
 							);
-						} catch (reviveErr) {
-							// Best-effort: if revive fails, file is still on disk,
-							// tombstone remains, importUntrackedFiles can pick it up.
-							this.trace?.("disk", "remote-delete-preserved-revive-failed", {
-								path,
-								normalizedPath: normalized,
-								error: reviveErr instanceof Error ? reviveErr.message : String(reviveErr),
-							});
+						} else {
+							try {
+								this.vaultSync.ensureFile(
+									normalized,
+									decision.diskContent,
+									this.getDeviceName(),
+									{
+										reviveTombstone: true,
+										reviveReason: "remote-delete-local-dirty-preserved",
+									},
+								);
+								this.trace?.("disk", "remote-delete-preserved-revived", {
+									path,
+									normalizedPath: normalized,
+									reason: "remote-delete-local-dirty-preserved",
+									contentLength: decision.diskContent.length,
+								});
+								this.log(
+									`handleRemoteDelete: revived tombstone for "${path}" after dirty preservation`,
+								);
+							} catch (reviveErr) {
+								// Best-effort: if revive fails, file is still on disk,
+								// tombstone remains, importUntrackedFiles can pick it up.
+								this.trace?.("disk", "remote-delete-preserved-revive-failed", {
+									path,
+									normalizedPath: normalized,
+									error: reviveErr instanceof Error ? reviveErr.message : String(reviveErr),
+								});
+							}
 						}
 					}
 				// kind === "preserve-unresolved": file stays on disk, tombstone

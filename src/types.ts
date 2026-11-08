@@ -93,6 +93,24 @@ export function isMarkdownSyncable(path: string, excludePatterns: string[], conf
 }
 
 /**
+ * Whether a local delete of a conflict artifact should be recorded in the
+ * CRDT. Artifacts are local-only, so normally it should not. Older clients
+ * admitted some of them anyway; for those, the user deleting the file is the
+ * only signal that retires the shared entry; without a tombstone it lives
+ * in the room forever. Exclusions still apply: an excluded path never syncs.
+ */
+export function isLegacyConflictArtifactDeleteSyncable(
+	path: string,
+	excludePatterns: string[],
+	configDir: string,
+	hasCrdtEntry: boolean,
+): boolean {
+	if (!hasCrdtEntry) return false;
+	if (!isMarkdownConflictArtifactPath(path)) return false;
+	return !isExcluded(path, excludePatterns, configDir);
+}
+
+/**
  * Check if a vault-relative path is a non-markdown file eligible for
  * blob/attachment sync. Excludes the config directory, .trash/, user patterns,
  * and markdown files (handled by the CRDT text pipeline).

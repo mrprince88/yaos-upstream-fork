@@ -9,6 +9,7 @@ import type { TraceRecord } from "../observability/traceContext";
 import type { ProductFlightPathEventInput } from "../observability/traceSink";
 import { PRODUCT_EVENT_KIND } from "../observability/productEventKinds";
 import { ORIGIN_EDITOR_HEALTH_HEAL } from "./origins";
+import { isMarkdownConflictArtifactPath } from "./markdownConflictArtifact";
 
 /**
  * Manages per-editor CM6 bindings via yCollab.
@@ -335,7 +336,7 @@ export class EditorBindingManager {
 			`repair:${reason}`,
 		);
 		if (!target) {
-			return this.isHardTombstonedPath(file.path);
+			return this.isIntentionallyUnboundPath(file.path);
 		}
 
 		return this.applyBinding({
@@ -365,7 +366,7 @@ export class EditorBindingManager {
 			`heal:${reason}`,
 		);
 		if (!target) {
-			return this.isHardTombstonedPath(file.path);
+			return this.isIntentionallyUnboundPath(file.path);
 		}
 
 		const currentContent = view.editor.getValue();
@@ -407,6 +408,10 @@ export class EditorBindingManager {
 		this.lastDeviceName = deviceName;
 		const file = view.file;
 		if (!file) return;
+		if (isMarkdownConflictArtifactPath(file.path)) {
+			this.handleConflictArtifactBinding(view, `rebind:${reason}`);
+			return;
+		}
 		if (this.isHardTombstonedPath(file.path)) {
 			this.handleTombstonedBinding(view, `rebind:${reason}`);
 			return;
@@ -1145,13 +1150,15 @@ export class EditorBindingManager {
 				this.rebind(binding.view, this.lastDeviceName, `${source}:${issues}`);
 			}
 			const latestBinding = this.bindings.get(leafId);
-			const tombstoned = this.isHardTombstonedPath(binding.path);
+			const conflictArtifact = isMarkdownConflictArtifactPath(binding.path);
+			const tombstoned = !conflictArtifact && this.isHardTombstonedPath(binding.path);
 			const postView = latestBinding?.view ?? binding.view;
 			const postHealth = latestBinding
 				? this.inspectBindingHealth(postView, latestBinding)
 				: null;
 			const restored =
-				tombstoned
+				conflictArtifact
+				|| tombstoned
 				|| (!!postHealth && (postHealth.healthy || postHealth.settling));
 			if (!restored) {
 				this.trace?.("editor", "binding-health-retry-scheduled", {
@@ -1168,7 +1175,9 @@ export class EditorBindingManager {
 			}
 			this.trace?.("editor", "binding-health-restored", {
 				...traceDetails,
-				action: tombstoned
+				action: conflictArtifact
+					? "unbound-conflict-artifact"
+					: tombstoned
 					? "unbound-tombstone"
 					: (postHealth?.settling
 						? "settling"
@@ -1415,6 +1424,15 @@ export class EditorBindingManager {
 		const file = view.file;
 		if (!file) return null;
 
+		// Conflict copies are local-only safety files. Binding one would
+		// either admit it to the CRDT via ensureFile(), or, for a legacy
+		// copy already in the CRDT, let remote edits reach the file through
+		// the editor and bypass the disk-writeback gate.
+		if (isMarkdownConflictArtifactPath(file.path)) {
+			this.handleConflictArtifactBinding(view, reason);
+			return null;
+		}
+
 		const existingText = this.vaultSync.getTextForPath(file.path);
 		if (existingText) {
 			return {
@@ -1453,6 +1471,37 @@ export class EditorBindingManager {
 				this.vaultSync.getFileId(file.path)
 				?? this.vaultSync.getFileIdForText(ytext),
 		};
+	}
+
+	/**
+	 * Paths where a missing binding target is the intended outcome, not a
+	 * failure, so repair/heal must not keep retrying them.
+	 */
+	private isIntentionallyUnboundPath(path: string): boolean {
+		return isMarkdownConflictArtifactPath(path) || this.isHardTombstonedPath(path);
+	}
+
+	private handleConflictArtifactBinding(view: MarkdownView, reason: string): void {
+		const file = view.file;
+		if (!file) return;
+
+		const leafId =
+			view.leaf.id ?? file.path;
+		const existing = this.bindings.get(leafId);
+		this.trace?.("editor", "binding-blocked-conflict-artifact", {
+			path: file.path,
+			leafId,
+			reason,
+			hadBinding: !!existing,
+			inCrdt: !!this.vaultSync.getTextForPath(file.path),
+		});
+		this.log(
+			`binding blocked for conflict artifact "${file.path}" ` +
+			`(leaf=${leafId}, reason=${reason})`,
+		);
+		if (existing) {
+			this.unbind(view);
+		}
 	}
 
 	private isHardTombstonedPath(path: string): boolean {

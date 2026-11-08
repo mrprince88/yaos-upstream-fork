@@ -405,6 +405,46 @@ s.section("Scenario E: preserve-unresolved does not invoke trash, delete, or ens
 }
 
 // -------------------------------------------------------------------
+// Scenario F — preserve-revive for a conflict artifact keeps it local
+// -------------------------------------------------------------------
+//
+// Deleting a legacy conflict copy on one device tombstones its CRDT entry.
+// A device whose copy diverges keeps the file, but must not revive the
+// tombstone: that would re-admit a local-only safety copy to the room.
+
+s.section("Scenario F: dirty conflict artifact is preserved without reviving its tombstone");
+{
+	const path = "Notes/Plan (YAOS conflict from phone 2026-04-01T10-00-00Z).md";
+	const baselineText = "scenario-f known baseline";
+	const diskContent = "scenario-f locally edited safety copy";
+	const fix = buildFixture({ path, diskContent, trashAdapter: "preserve" });
+
+	await fix.mirror["handleRemoteDelete"](path, { baselineText });
+
+	assertEq(fix.trashCalls.length, 0, "dirty conflict artifact is not trashed");
+	assertEq(fix.deleteCalls.length, 0, "dirty conflict artifact is not deleted");
+	assertEq(fix.ensureFileCalls.length, 0, "dirty conflict artifact is not revived into the CRDT");
+	s.check(
+		fix.traces.some((t) => t.msg === "remote-delete-preserved-not-revived"),
+		"skipped revive is traced",
+	);
+	s.check(fix.fileExists(path), "dirty conflict artifact stays on disk");
+}
+
+s.section("Scenario G: clean conflict artifact follows the remote delete");
+{
+	const path = "Notes/Plan (YAOS conflict from phone 2026-04-01T10-00-00Z).md";
+	const content = "scenario-g unchanged safety copy";
+	const fix = buildFixture({ path, diskContent: content, trashAdapter: "available" });
+
+	await fix.mirror["handleRemoteDelete"](path, { baselineText: content });
+
+	assertEq(fix.trashCalls.length, 1, "clean conflict artifact is trashed, not hard-deleted");
+	assertEq(fix.ensureFileCalls.length, 0, "clean conflict artifact is not revived");
+	s.check(!fix.fileExists(path), "clean conflict artifact is removed from disk");
+}
+
+// -------------------------------------------------------------------
 // Source-grep backup signal (optional per Requirement 7.6, labeled as backup).
 // -------------------------------------------------------------------
 //
