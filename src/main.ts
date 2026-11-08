@@ -14,7 +14,7 @@ import { type BlobQueueSnapshot, type BlobSyncManager } from "./sync/blobSync";
 import {
 	type ServerCapabilities,
 } from "./sync/serverCapabilities";
-import { isMarkdownSyncable, isBlobSyncable } from "./types";
+import { isMarkdownSyncable, isBlobSyncable, isLegacyConflictArtifactDeleteSyncable } from "./types";
 import { planCategoryRenameAction } from "./sync/policy/renameAdmissionPolicy";
 import { classifySyncPath } from "./paths/pathCategory";
 import { isCanonicalPathFileIdCollision } from "./paths/pathCollision";
@@ -282,6 +282,21 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 
 	private isMarkdownPathSyncable(path: string): boolean {
 		return isMarkdownSyncable(path, this.excludePatterns, this.getRuntimeConfig().vaultConfigDir);
+	}
+
+	/**
+	 * A delete that should reach the CRDT: any syncable note, plus a legacy
+	 * conflict copy that an older client already admitted (see
+	 * isLegacyConflictArtifactDeleteSyncable).
+	 */
+	private isMarkdownDeleteSyncable(path: string): boolean {
+		if (this.isMarkdownPathSyncable(path)) return true;
+		return isLegacyConflictArtifactDeleteSyncable(
+			path,
+			this.excludePatterns,
+			this.getRuntimeConfig().vaultConfigDir,
+			!!this.vaultSync?.getFileId(path),
+		);
 	}
 
 	private isBlobPathSyncable(path: string): boolean {
@@ -1340,7 +1355,7 @@ export default class VaultCrdtSyncPlugin extends Plugin {
 				if (!this.reconciliationController.isReconciled) return;
 				if (!(file instanceof TFile)) return;
 
-				if (this.isMarkdownPathSyncable(file.path)) {
+				if (this.isMarkdownDeleteSyncable(file.path)) {
 					const opId = this.newOpId();
 					if (this.diskMirror?.consumeDeleteSuppression(file.path)) {
 						this.log(`Suppressed delete event for "${file.path}"`);
